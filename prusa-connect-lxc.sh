@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  Prusa Connect Local – Proxmox LXC installer
-#  Version: 1.0.0
+#  Version: 1.1.0
 #  Author:  JFFK (github.com/dzeykop)
-#  Repo:    https://github.com/dzeykop/proxmox-prusa-connect
+#  Repo:    https://github.com/dzeykop/proxmox-prusa-connect-lxc
 #
 #  Creates an unprivileged Debian LXC container on Proxmox VE and installs
 #  Prusa Connect Local (binary + systemd service) inside it.
 #
 #  Run on the Proxmox host as root:
-#    bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-prusa-connect/main/prusa-connect-lxc.sh)"
+#    bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-prusa-connect-lxc/main/prusa-connect-lxc.sh)"
 # =============================================================================
 
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.1.0"
 APP_NAME="Prusa Connect Local"
 GH_REPO="prusa3d/prusa-connect"
 ASSET_NAME="prusa_connect_amd64"
@@ -34,6 +34,10 @@ INSTALL_DONE=0
 CTID=""
 TMP_DIR="$(mktemp -d)"
 
+# Progress
+STEP=0
+TOTAL_STEPS=8
+
 # ---------- output helpers ----------------------------------------------------
 GN="\e[32m"; YW="\e[33m"; RD="\e[31m"; BL="\e[36m"; CL="\e[0m"; BD="\e[1m"
 msg_info() { echo -e " ${BL}[INFO]${CL} $*"; }
@@ -42,10 +46,44 @@ msg_warn() { echo -e " ${YW}[WARN]${CL} $*"; }
 msg_err()  { echo -e " ${RD}[FAIL]${CL} $*" >&2; }
 die()      { msg_err "$*"; exit 1; }
 
+# Prints a numbered step header, e.g. "[3/8] Preparing Debian template"
+step() {
+  STEP=$((STEP + 1))
+  echo
+  echo -e "${BD}[${STEP}/${TOTAL_STEPS}] $*${CL}"
+}
+
+# Runs a command in the background and shows a spinner with elapsed seconds.
+# On failure the last lines of its output are shown.
+run_spin() {
+  local msg="$1"; shift
+  local log="$TMP_DIR/step.log"
+  local sp='|/-\' i=0 start=$SECONDS
+  "$@" >"$log" 2>&1 &
+  local pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r ${BL}[ %s ]${CL} %s ... %ds " "${sp:i++%4:1}" "$msg" $((SECONDS - start))
+    sleep 0.2
+  done
+  if wait "$pid"; then
+    printf "\r\e[K"
+    msg_ok "$msg ($((SECONDS - start))s)"
+  else
+    printf "\r\e[K"
+    msg_err "$msg failed – last output:"
+    tail -n 20 "$log" >&2
+    return 1
+  fi
+}
+
+# Shows a waiting line with elapsed time; $1 = message, $2 = elapsed, $3 = max
+show_wait() { printf "\r ${BL}[WAIT]${CL} %s ... %ds / max %ds " "$1" "$2" "$3"; }
+
 cleanup() {
   local rc=$?
   rm -rf "$TMP_DIR"
   if [[ $rc -ne 0 && $CT_CREATED -eq 1 && $INSTALL_DONE -eq 0 && -n "$CTID" ]]; then
+    echo
     msg_warn "[ROLLBACK] Installation failed – removing unfinished container ${CTID}"
     pct stop "$CTID" >/dev/null 2>&1 || true
     pct destroy "$CTID" --purge >/dev/null 2>&1 || true
@@ -57,7 +95,7 @@ trap 'msg_err "Error in line $LINENO: $BASH_COMMAND"' ERR
 
 cancelled() { echo; msg_warn "Cancelled by user – nothing was changed."; exit 0; }
 
-# ---------- 1. pre-flight checks ------------------------------------------------
+# ---------- pre-flight checks ---------------------------------------------------
 clear
 echo -e "${BD}${TITLE}${CL}\n"
 
@@ -79,11 +117,11 @@ whiptail --title "$TITLE" --yesno \
 "This will create a new unprivileged LXC container with ${APP_NAME}.\n\nProceed?" 10 64 \
   || cancelled
 
-# ---------- 2. host resources -------------------------------------------------
+# ---------- host resources ------------------------------------------------------
 HOST_CORES=$(nproc)
 HOST_RAM_FREE=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)
 
-# ---------- 3. settings ---------------------------------------------------------
+# ---------- settings ------------------------------------------------------------
 NEXT_ID=$(pvesh get /cluster/nextid)
 CTID=$(whiptail --title "$TITLE" --inputbox "Container ID:" 9 60 "$NEXT_ID" 3>&1 1>&2 2>&3) || cancelled
 [[ "$CTID" =~ ^[0-9]+$ ]] || die "Invalid container ID."
@@ -147,8 +185,13 @@ whiptail --title "$TITLE" --yesno \
   Type:          unprivileged LXC, start at boot\n
 Create the container now?" 20 64 || cancelled
 
-# ---------- 4. find the newest release (pre-releases included) ------------------
-msg_info "Looking up the newest ${APP_NAME} release..."
+clear
+echo -e "${BD}${TITLE}${CL}"
+echo -e "Installing container ${CTID} (${CT_HOSTNAME}) – this takes about 1–3 minutes."
+INSTALL_START=$SECONDS
+
+# ---------- [1] find the newest release (pre-releases included) -----------------
+step "Looking up the newest ${APP_NAME} release"
 curl -fsSL "https://api.github.com/repos/${GH_REPO}/releases?per_page=10" -o "$TMP_DIR/releases.json" \
   || die "Could not read releases from GitHub."
 # Perl with JSON::PP is always present on Proxmox (no jq needed)
@@ -166,8 +209,10 @@ read -r REL_TAG ASSET_URL ASSET_DIGEST < <(perl -MJSON::PP -e '
 [[ -n "${ASSET_URL:-}" ]] || die "Release file ${ASSET_NAME} not found on GitHub."
 msg_ok "Found release ${REL_TAG}"
 
-msg_info "Downloading ${ASSET_NAME}..."
-curl -fsSL "$ASSET_URL" -o "$TMP_DIR/$ASSET_NAME" || die "Download failed."
+# ---------- [2] download + verify -----------------------------------------------
+step "Downloading ${ASSET_NAME}"
+curl -fL --progress-bar "$ASSET_URL" -o "$TMP_DIR/$ASSET_NAME" || die "Download failed."
+msg_ok "Downloaded ($(du -h "$TMP_DIR/$ASSET_NAME" | cut -f1))"
 if [[ "$ASSET_DIGEST" == sha256:* ]]; then
   echo "${ASSET_DIGEST#sha256:}  $TMP_DIR/$ASSET_NAME" | sha256sum -c --status \
     || die "Checksum mismatch – download damaged. Nothing was installed."
@@ -176,24 +221,25 @@ else
   msg_warn "No checksum published by GitHub – verification skipped"
 fi
 
-# ---------- 5. Debian template --------------------------------------------------
-msg_info "Updating template list..."
-pveam update >/dev/null || msg_warn "Template list update failed – using cached list"
+# ---------- [3] Debian template -------------------------------------------------
+step "Preparing Debian template"
+run_spin "Updating template list" pveam update || msg_warn "Template list update failed – using cached list"
 TEMPLATE=$(pveam available --section system | awk '{print $2}' \
   | grep -E '^debian-[0-9]+-standard_.*_amd64\.tar\.(zst|gz|xz)$' | sort -V | tail -n1)
 [[ -n "$TEMPLATE" ]] || die "No Debian template found."
 TPL_STORAGE=$(pvesm status -content vztmpl | awk 'NR>1 && $3=="active" {print $1; exit}')
 [[ -n "$TPL_STORAGE" ]] || die "No storage for templates found."
-if ! pveam list "$TPL_STORAGE" | grep -q "$TEMPLATE"; then
-  msg_info "Downloading template ${TEMPLATE}..."
-  pveam download "$TPL_STORAGE" "$TEMPLATE" >/dev/null || die "Template download failed."
+if pveam list "$TPL_STORAGE" | grep -q "$TEMPLATE"; then
+  msg_ok "Template already present: ${TEMPLATE}"
+else
+  run_spin "Downloading template ${TEMPLATE} (about 120 MB)" pveam download "$TPL_STORAGE" "$TEMPLATE"
 fi
-msg_ok "Template ready: ${TEMPLATE}"
 
-# ---------- 6. create container -------------------------------------------------
-msg_info "Creating container ${CTID}..."
-DESCRIPTION="<h3>${APP_NAME}</h3><p>Installed with proxmox-prusa-connect v${SCRIPT_VERSION}<br>Release: ${REL_TAG}<br>Web UI: port ${APP_PORT}</p><p>from JFFK</p>"
-pct create "$CTID" "${TPL_STORAGE}:vztmpl/${TEMPLATE}" \
+# ---------- [4] create + start container ----------------------------------------
+step "Creating and starting container ${CTID}"
+DESCRIPTION="<h3>${APP_NAME}</h3><p>Installed with proxmox-prusa-connect-lxc v${SCRIPT_VERSION}<br>Release: ${REL_TAG}<br>Web UI: port ${APP_PORT}</p><p>from JFFK</p>"
+CT_CREATED=1   # set before create, so a half-created container is also rolled back
+run_spin "Creating container" pct create "$CTID" "${TPL_STORAGE}:vztmpl/${TEMPLATE}" \
   --hostname "$CT_HOSTNAME" \
   --cores "$CORES" --memory "$RAM" --swap 256 \
   --rootfs "${CT_STORAGE}:${DISK}" \
@@ -201,28 +247,32 @@ pct create "$CTID" "${TPL_STORAGE}:vztmpl/${TEMPLATE}" \
   --unprivileged 1 --features nesting=1 \
   --onboot 1 --ostype debian \
   --tags "prusa;3d-printing" \
-  --description "$DESCRIPTION" >/dev/null
-CT_CREATED=1
-msg_ok "Container ${CTID} created"
+  --description "$DESCRIPTION"
+run_spin "Starting container" pct start "$CTID"
 
-pct start "$CTID"
-msg_info "Waiting for network in the container..."
-for _ in $(seq 1 30); do
-  pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1 && break
+MAX=60; start=$SECONDS; ONLINE=0
+while (( SECONDS - start < MAX )); do
+  if pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1; then ONLINE=1; break; fi
+  show_wait "Waiting for network in the container" $((SECONDS - start)) "$MAX"
   sleep 2
 done
-pct exec "$CTID" -- getent hosts deb.debian.org >/dev/null 2>&1 || die "Container has no network/DNS."
+printf "\r\e[K"
+(( ONLINE )) || die "Container has no network/DNS."
 msg_ok "Container is online"
 
-# ---------- 7. install inside the container -------------------------------------
-msg_info "Updating the container system (this can take a minute)..."
-pct exec "$CTID" -- bash -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get -y -qq upgrade && apt-get -y -qq install curl ca-certificates" >/dev/null
-msg_ok "System updated"
+# ---------- [5] update container system -----------------------------------------
+step "Updating the container system"
+run_spin "Reading package lists" pct exec "$CTID" -- bash -c "DEBIAN_FRONTEND=noninteractive apt-get update"
+run_spin "Installing updates" pct exec "$CTID" -- bash -c "DEBIAN_FRONTEND=noninteractive apt-get -y upgrade"
+run_spin "Installing curl and certificates" pct exec "$CTID" -- bash -c "DEBIAN_FRONTEND=noninteractive apt-get -y install curl ca-certificates"
 
-msg_info "Installing ${APP_NAME} ${REL_TAG}..."
+# ---------- [6] install Prusa Connect -------------------------------------------
+step "Installing ${APP_NAME} ${REL_TAG}"
 pct exec "$CTID" -- bash -c "id ${APP_USER} >/dev/null 2>&1 || useradd --system --home ${APP_DIR} --shell /usr/sbin/nologin ${APP_USER}; mkdir -p ${APP_DIR}"
+msg_ok "User '${APP_USER}' and folder ${APP_DIR} created"
 pct push "$CTID" "$TMP_DIR/$ASSET_NAME" "${APP_DIR}/prusa_connect" --perms 0755
 pct exec "$CTID" -- bash -c "echo '${REL_TAG}' > ${APP_DIR}/VERSION; chown -R ${APP_USER}:${APP_USER} ${APP_DIR}"
+msg_ok "Program copied into the container"
 
 cat > "$TMP_DIR/prusa-connect.service" <<EOF
 [Unit]
@@ -244,27 +294,35 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 WantedBy=multi-user.target
 EOF
 pct push "$CTID" "$TMP_DIR/prusa-connect.service" /etc/systemd/system/prusa-connect.service
-pct exec "$CTID" -- systemctl daemon-reload
-pct exec "$CTID" -- systemctl enable --now prusa-connect >/dev/null 2>&1
-msg_ok "Service prusa-connect installed and started"
+msg_ok "systemd service created"
 
-# ---------- 8. reachability + setup code ---------------------------------------
-msg_info "Waiting for the web interface on port ${APP_PORT}..."
-UP=0
-for _ in $(seq 1 60); do
+# ---------- [7] start service + wait for web UI ---------------------------------
+step "Starting ${APP_NAME}"
+pct exec "$CTID" -- systemctl daemon-reload
+run_spin "Enabling and starting service" pct exec "$CTID" -- systemctl enable --now prusa-connect
+
+MAX=120; start=$SECONDS; UP=0
+while (( SECONDS - start < MAX )); do
   if pct exec "$CTID" -- curl -fs -o /dev/null --max-time 2 "http://127.0.0.1:${APP_PORT}"; then UP=1; break; fi
+  show_wait "Waiting for the web interface on port ${APP_PORT}" $((SECONDS - start)) "$MAX"
   sleep 2
 done
+printf "\r\e[K"
 INSTALL_DONE=1   # from here on the container is never removed automatically
+if (( UP )); then msg_ok "Web interface answers"; else msg_warn "Web interface did not answer within ${MAX}s"; fi
 
+# ---------- [8] read IP + setup code --------------------------------------------
+step "Reading address and setup code"
 CT_IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
 SETUP_LINE=$(pct exec "$CTID" -- journalctl -u prusa-connect --no-pager -o cat 2>/dev/null \
   | grep -i -m1 -E 'setup' || true)
+[[ -n "$SETUP_LINE" ]] && msg_ok "Setup code found" || msg_warn "Setup code not found in the log"
 
+ELAPSED=$((SECONDS - INSTALL_START))
 echo
 echo -e "${GN}${BD}==============================================================${CL}"
 if (( UP )); then
-  echo -e "${GN}${BD}  ${APP_NAME} is running!${CL}"
+  echo -e "${GN}${BD}  ${APP_NAME} is running!  (installed in $((ELAPSED / 60))m $((ELAPSED % 60))s)${CL}"
 else
   msg_warn "Web interface did not answer yet. Check: pct exec ${CTID} -- journalctl -u prusa-connect"
 fi
