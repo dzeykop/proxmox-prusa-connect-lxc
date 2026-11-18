@@ -21,7 +21,8 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-prusa-co
 4. Downloads the newest Debian template (if needed) and creates the container
 5. Installs the binary to `/opt/prusa-connect`, runs it as user `prusa-connect` via systemd
 6. Shows the web address (port 8080) and the one-time setup code
-7. Removes the unfinished container automatically if anything fails
+7. Asks whether the container should start automatically at host boot (can be changed later under *Options → Start at boot*)
+8. Removes the unfinished container automatically if anything fails
 
 ## Default settings
 
@@ -73,6 +74,7 @@ pct snapshot <CTID> before-update
 
 | Version | Changes |
 |---------|---------|
+| 1.2.0   | Asks at the end whether the container should start at boot |
 | 1.1.0   | Visible progress: numbered steps [1/8]…[8/8], spinner with elapsed time, download progress bar, waiting timers, total install time |
 | 1.0.1   | Own repository (proxmox-prusa-connect-lxc) |
 | 1.0.0   | First release |

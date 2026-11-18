@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  Prusa Connect Local – Proxmox LXC installer
-#  Version: 1.1.0
+#  Version: 1.2.0
 #  Author:  JFFK (github.com/dzeykop)
 #  Repo:    https://github.com/dzeykop/proxmox-prusa-connect-lxc
 #
@@ -14,7 +14,7 @@
 
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.1.0"
+SCRIPT_VERSION="1.2.0"
 APP_NAME="Prusa Connect Local"
 GH_REPO="prusa3d/prusa-connect"
 ASSET_NAME="prusa_connect_amd64"
@@ -182,7 +182,8 @@ whiptail --title "$TITLE" --yesno \
   Disk:          ${DISK} GB on ${CT_STORAGE}
   Bridge:        ${BRIDGE}
   IP:            ${NET_IP}
-  Type:          unprivileged LXC, start at boot\n
+  Type:          unprivileged LXC\n
+(Start at boot is asked at the end.)\n
 Create the container now?" 20 64 || cancelled
 
 clear
@@ -245,7 +246,7 @@ run_spin "Creating container" pct create "$CTID" "${TPL_STORAGE}:vztmpl/${TEMPLA
   --rootfs "${CT_STORAGE}:${DISK}" \
   --net0 "$NET_CFG" \
   --unprivileged 1 --features nesting=1 \
-  --onboot 1 --ostype debian \
+  --onboot 0 --ostype debian \
   --tags "prusa;3d-printing" \
   --description "$DESCRIPTION"
 run_spin "Starting container" pct start "$CTID"
@@ -317,8 +318,18 @@ CT_IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
 SETUP_LINE=$(pct exec "$CTID" -- journalctl -u prusa-connect --no-pager -o cat 2>/dev/null \
   | grep -i -m1 -E 'setup' || true)
 [[ -n "$SETUP_LINE" ]] && msg_ok "Setup code found" || msg_warn "Setup code not found in the log"
-
 ELAPSED=$((SECONDS - INSTALL_START))
+
+# ---------- start at boot? ------------------------------------------------------
+if whiptail --title "$TITLE" --yesno \
+"Installation finished.\n\nShould container ${CTID} start automatically when the Proxmox host boots?\n\n(Recommended: Yes – otherwise Prusa Connect is offline after every host restart.)" 13 68; then
+  pct set "$CTID" --onboot 1
+  ONBOOT="yes"
+  msg_ok "Start at boot: enabled"
+else
+  ONBOOT="no"
+  msg_warn "Start at boot: disabled – start it manually with: pct start ${CTID}"
+fi
 echo
 echo -e "${GN}${BD}==============================================================${CL}"
 if (( UP )); then
@@ -329,6 +340,7 @@ fi
 echo -e "${GN}${BD}==============================================================${CL}"
 echo -e "  Web UI:      ${BD}http://${CT_IP}:${APP_PORT}${CL}"
 echo -e "  Container:   ${CTID} (${CT_HOSTNAME})"
+echo -e "  Autostart:   ${ONBOOT}"
 echo -e "  Release:     ${REL_TAG}"
 if [[ -n "$SETUP_LINE" ]]; then
   echo -e "  Setup code:  ${BD}${SETUP_LINE}${CL}"
