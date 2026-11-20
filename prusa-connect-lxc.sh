@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  Prusa Connect Local – Proxmox LXC installer
-#  Version: 1.2.0
+#  Version: 1.3.0
 #  Author:  JFFK (github.com/dzeykop)
 #  Repo:    https://github.com/dzeykop/proxmox-prusa-connect-lxc
 #
@@ -14,7 +14,7 @@
 
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.3.0"
 APP_NAME="Prusa Connect Local"
 GH_REPO="prusa3d/prusa-connect"
 ASSET_NAME="prusa_connect_amd64"
@@ -315,9 +315,24 @@ if (( UP )); then msg_ok "Web interface answers"; else msg_warn "Web interface d
 # ---------- [8] read IP + setup code --------------------------------------------
 step "Reading address and setup code"
 CT_IP=$(pct exec "$CTID" -- hostname -I | awk '{print $1}')
-SETUP_LINE=$(pct exec "$CTID" -- journalctl -u prusa-connect --no-pager -o cat 2>/dev/null \
-  | grep -i -m1 -E 'setup' || true)
-[[ -n "$SETUP_LINE" ]] && msg_ok "Setup code found" || msg_warn "Setup code not found in the log"
+[[ -n "$CT_IP" ]] && msg_ok "IP address: ${CT_IP}" || msg_warn "IP address not found"
+
+# The server logs a line like:  ... level=WARN msg="..." setup="POST /api/v1/setup" setup_code=XXXX
+# A restart prints a new code, so always take the LAST one.
+get_setup_code() {
+  pct exec "$CTID" -- journalctl -u prusa-connect --no-pager -o cat 2>/dev/null \
+    | grep -o 'setup_code=[^ ]*' | tail -n1 | cut -d= -f2- | tr -d '"' || true
+}
+SETUP_CODE=""
+MAX=30; start=$SECONDS
+while (( SECONDS - start < MAX )); do
+  SETUP_CODE=$(get_setup_code)
+  [[ -n "$SETUP_CODE" ]] && break
+  show_wait "Waiting for the setup code in the log" $((SECONDS - start)) "$MAX"
+  sleep 2
+done
+printf "\r\e[K"
+[[ -n "$SETUP_CODE" ]] && msg_ok "Setup code found" || msg_warn "Setup code not found in the log"
 ELAPSED=$((SECONDS - INSTALL_START))
 
 # ---------- start at boot? ------------------------------------------------------
@@ -342,12 +357,15 @@ echo -e "  Web UI:      ${BD}http://${CT_IP}:${APP_PORT}${CL}"
 echo -e "  Container:   ${CTID} (${CT_HOSTNAME})"
 echo -e "  Autostart:   ${ONBOOT}"
 echo -e "  Release:     ${REL_TAG}"
-if [[ -n "$SETUP_LINE" ]]; then
-  echo -e "  Setup code:  ${BD}${SETUP_LINE}${CL}"
+echo
+if [[ -n "$SETUP_CODE" ]]; then
+  echo -e "  Setup code:  ${GN}${BD}${SETUP_CODE}${CL}"
+  echo    "               (works once – a restart of the service prints a new one)"
 else
-  echo -e "  Setup code:  not found – show it with:"
-  echo -e "               pct exec ${CTID} -- journalctl -u prusa-connect --no-pager"
+  echo -e "  Setup code:  not found yet"
 fi
+echo "  Show the current code again:"
+echo "    pct exec ${CTID} -- journalctl -u prusa-connect --no-pager | grep -o 'setup_code=[^ ]*' | tail -n1"
 echo
 echo "  Next steps:"
 echo "   1. Open the Web UI and enter the setup code in the wizard"
