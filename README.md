@@ -49,13 +49,18 @@ You only need it again if:
 - you closed the terminal before entering the code in the wizard
 - the container or the service restarted before you finished the wizard – every restart prints a **new** code, so the one shown by the installer no longer works
 
-Show the current code on the Proxmox host:
+Show the current code – run on the Proxmox host as root (via SSH):
 
 ```bash
-pct exec <CTID> -- journalctl -u prusa-connect --no-pager | grep -o 'setup_code=[^ ]*' | tail -n1
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-prusa-connect-lxc/main/prusa-connect-code.sh)"
 ```
 
-Replace `<CTID>` with your container number, without the brackets (e.g. `104`).
+What it does:
+
+1. Lists all LXC containers with number, name and status
+2. Recommends the container whose name contains *prusa*, *connect* or *local* – just press **Enter** to confirm
+3. Shows the web address and the current setup code in **green**
+4. If the wizard is already finished, it tells you that no code is needed; if the container or the service is not running, it tells you how to start it
 
 ### Open a shell in the container
 
@@ -96,6 +101,12 @@ What it does:
 | `Setup code: not found` | Run the `journalctl` command above |
 
 ## Changelog
+
+**Setup code script (prusa-connect-code.sh)**
+
+| Version | Changes |
+|---------|---------|
+| 1.0.0   | First release: container menu with recommendation, setup code in green |
 
 **Update script (prusa-connect-update.sh)**
 
