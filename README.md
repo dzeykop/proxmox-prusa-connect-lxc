@@ -40,15 +40,24 @@ Print files are stored on the container disk – choose more space if you keep m
 2. Create the admin account in the wizard
 3. Add a printer: download the settings file, copy it to a USB drive, load it on the printer (Settings → Network → Prusa Connect). Firmware 6.4.0 or newer is required.
 
-Setup code lost? Show it on the Proxmox host with:
+### Setup code lost before finishing the wizard?
+
+The setup code is only needed **once**, for the first setup wizard. After you finish the wizard, the server no longer asks for it – you can ignore this section.
+
+You only need it again if:
+
+- you closed the terminal before entering the code in the wizard
+- the container or the service restarted before you finished the wizard – every restart prints a **new** code, so the one shown by the installer no longer works
+
+Show the current code on the Proxmox host:
 
 ```bash
 pct exec <CTID> -- journalctl -u prusa-connect --no-pager | grep -o 'setup_code=[^ ]*' | tail -n1
 ```
 
-Replace `<CTID>` with your container number, without the brackets (e.g. `104`). The code works once – every restart of the service prints a new one.
+Replace `<CTID>` with your container number, without the brackets (e.g. `104`).
 
-Open a shell in the container:
+### Open a shell in the container
 
 ```bash
 pct enter <CTID>
