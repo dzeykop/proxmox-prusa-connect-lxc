@@ -56,11 +56,25 @@ pct enter <CTID>
 
 ## Updates
 
-Prusa Connect Local is still beta (0.x) – configuration and API may change. **Take a snapshot before every update:**
+Prusa Connect Local is still beta (0.x) – configuration and API may change. Use the update script – it never installs anything without your confirmation.
+
+Run on the Proxmox host as root (via SSH):
 
 ```bash
-pct snapshot <CTID> before-update
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-prusa-connect-lxc/main/prusa-connect-update.sh)"
 ```
+
+What it does:
+
+1. Finds the running Prusa Connect container (asks if there are several)
+2. Shows the installed and the newest version – stops if you are up to date
+3. Asks before installing and links the release notes
+4. Takes a snapshot `pre_update_YYYYMMDD_HHMM` (snapshots need e.g. `local-lvm` or ZFS; without snapshot support it asks whether to continue with a file backup only)
+5. Replaces the program, restarts the service and checks `/api/v1/health`
+6. **Rolls back automatically** if anything fails
+7. After a successful update: offers to delete snapshots from *earlier* updates – the snapshot of this update is kept
+
+> A snapshot is not a backup – it lives on the same disk as the container.
 
 ## Troubleshooting
 
@@ -73,6 +87,14 @@ pct snapshot <CTID> before-update
 | `Setup code: not found` | Run the `journalctl` command above |
 
 ## Changelog
+
+**Update script (prusa-connect-update.sh)**
+
+| Version | Changes |
+|---------|---------|
+| 1.0.0   | First release: version check, snapshot, update, health check, automatic rollback, cleanup of old snapshots |
+
+**Installer (prusa-connect-lxc.sh)**
 
 | Version | Changes |
 |---------|---------|
