@@ -49,13 +49,7 @@ You only need it again if:
 - you closed the terminal before entering the code in the wizard
 - the container or the service restarted before you finished the wizard – every restart prints a **new** code, so the one shown by the installer no longer works
 
-Show the current code on the Proxmox host:
-
-```bash
-pct exec <CTID> -- journalctl -u prusa-connect --no-pager | grep -o 'setup_code=[^ ]*' | tail -n1
-```
-
-Replace `<CTID>` with your container number, without the brackets (e.g. `104`).
+Show the current code: run the [tools script](#updates) and choose **Show setup code**. It lists your Prusa Connect containers, you pick one, and the code appears in green. If the wizard is already finished, it tells you that no code is needed.
 
 ### Open a shell in the container
 
@@ -65,7 +59,7 @@ pct enter <CTID>
 
 ## Updates
 
-Prusa Connect Local is still beta (0.x) – configuration and API may change. Use the update script – it never installs anything without your confirmation.
+Prusa Connect Local is still beta (0.x) – configuration and API may change. Use the tools script – it never installs anything without your confirmation.
 
 Run on the Proxmox host as root (via SSH):
 
@@ -73,9 +67,16 @@ Run on the Proxmox host as root (via SSH):
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-prusa-connect-lxc/main/prusa-connect-update.sh)"
 ```
 
-What it does:
+A menu offers two actions:
 
-1. Finds the running Prusa Connect container (asks if there are several)
+- **Check for updates** – see below
+- **Show setup code** – shows the web address and the current setup code of a container (only needed until the setup wizard is finished)
+
+Both list all running Prusa Connect containers with number and name, so you pick the one you want.
+
+What *Check for updates* does:
+
+1. Lets you pick the container
 2. Shows the installed and the newest version – stops if you are up to date
 3. Asks before installing and links the release notes
 4. Takes a snapshot `pre_update_YYYYMMDD_HHMM` (snapshots need e.g. `local-lvm` or ZFS; without snapshot support it asks whether to continue with a file backup only)
@@ -101,6 +102,7 @@ What it does:
 
 | Version | Changes |
 |---------|---------|
+| 1.1.0   | Start menu: *Check for updates* or *Show setup code*; container is always picked from a list; setup code shown in green (only from the current service run) |
 | 1.0.0   | First release: version check, snapshot, update, health check, automatic rollback, cleanup of old snapshots |
 
 **Installer (prusa-connect-lxc.sh)**
