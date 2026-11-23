@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  Prusa Connect Local – show setup code
-#  Version: 1.0.0
+#  Version: 1.0.1
 #  Author:  JFFK (github.com/dzeykop)
 #  Repo:    https://github.com/dzeykop/proxmox-prusa-connect-lxc
 #
@@ -15,11 +15,14 @@
 
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.0.1"
 APP_NAME="Prusa Connect Local"
 APP_DIR="/opt/prusa-connect"
 APP_PORT="8080"
 TITLE="Prusa Connect Local – Setup Code v${SCRIPT_VERSION}"
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 # ---------- output helpers ----------------------------------------------------
 GN="\e[32m"; YW="\e[33m"; RD="\e[31m"; BL="\e[36m"; CL="\e[0m"; BD="\e[1m"
@@ -31,6 +34,26 @@ die()      { msg_err "$*"; echo; exit 1; }
 
 cancelled() { echo; msg_warn "Cancelled by user."; exit 0; }
 
+# Runs a command in the background and shows a spinner with elapsed seconds.
+# The command's output is saved in $TMP_DIR/out. Returns the command's exit code.
+# The text in $TMP_DIR/progress (if the command writes it) is shown live.
+spin() {
+  local msg="$1"; shift
+  local sp='|/-\' i=0 start=$SECONDS rc=0 extra
+  : > "$TMP_DIR/progress"
+  "$@" > "$TMP_DIR/out" 2>/dev/null &
+  local pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    extra=$(cat "$TMP_DIR/progress" 2>/dev/null || true)
+    printf "\r ${BL}[ %s ]${CL} %s%s ... %ds \e[K" "${sp:i++%4:1}" "$msg" "${extra:+ $extra}" $((SECONDS - start))
+    sleep 0.2
+  done
+  wait "$pid" || rc=$?
+  printf "\r\e[K"
+  LAST_SECS=$((SECONDS - start))
+  return $rc
+}
+
 # ---------- pre-flight checks ---------------------------------------------------
 clear
 echo -e "${BD}${TITLE}${CL}\n"
@@ -41,13 +64,32 @@ command -v pct >/dev/null && command -v pveversion >/dev/null \
 command -v whiptail >/dev/null || die "whiptail not found."
 
 # ---------- read all LXC containers ---------------------------------------------
-msg_info "Reading LXC containers..."
+# Writes "id|status|name" per container to stdout and "N/TOTAL (ID x)" to the
+# progress file, so the spinner can show which container is being read.
+scan_containers() {
+  local -a lines
+  local total n=0 line id status name
+  mapfile -t lines < <(pct list | awk 'NR>1 {print $1, $2}')
+  total=${#lines[@]}
+  for line in "${lines[@]}"; do
+    read -r id status <<<"$line"
+    n=$((n + 1))
+    echo "${n}/${total} (ID ${id})" > "$TMP_DIR/progress"
+    name=$(pct config "$id" 2>/dev/null | awk '/^hostname:/ {print $2}')
+    echo "${id}|${status}|${name:-unknown}"
+  done
+}
+
+spin "Reading container" scan_containers || die "Could not read the container list."
+mapfile -t CONTAINERS < "$TMP_DIR/out"
+(( ${#CONTAINERS[@]} )) || die "No LXC containers found on this host."
+msg_ok "Found ${#CONTAINERS[@]} container(s) (${LAST_SECS}s)"
+
 MENU=()
 BEST_ID=""
 BEST_SCORE=0
-while read -r id status; do
-  name=$(pct config "$id" 2>/dev/null | awk '/^hostname:/ {print $2}')
-  name="${name:-unknown}"
+for entry in "${CONTAINERS[@]}"; do
+  IFS='|' read -r id status name <<<"$entry"
   lname="${name,,}"
 
   # recommendation: "prusa" counts most, then "connect", then "local"
@@ -57,16 +99,12 @@ while read -r id status; do
   [[ "$lname" == *local*   ]] && score=$((score + 1))
   [[ "$status" == "running" ]] && (( score > 0 )) && score=$((score + 1))
 
-  label="${name}  (${status})"
   if (( score > BEST_SCORE )); then
     BEST_SCORE=$score
     BEST_ID=$id
   fi
-  MENU+=("$id" "$label")
-done < <(pct list | awk 'NR>1 {print $1, $2}')
-
-(( ${#MENU[@]} )) || die "No LXC containers found on this host."
-msg_ok "Found $(( ${#MENU[@]} / 2 )) container(s)"
+  MENU+=("$id" "${name}  (${status})")
+done
 
 # mark the recommended container
 DEFAULT_ARGS=()
@@ -81,38 +119,52 @@ fi
 
 CTID=$(whiptail --title "$TITLE" "${DEFAULT_ARGS[@]}" --menu "$PROMPT" 18 70 8 \
   "${MENU[@]}" 3>&1 1>&2 2>&3) || cancelled
-CT_NAME=$(pct config "$CTID" | awk '/^hostname:/ {print $2}')
+CT_NAME=""
+for entry in "${CONTAINERS[@]}"; do
+  IFS='|' read -r id status name <<<"$entry"
+  [[ "$id" == "$CTID" ]] && CT_NAME="$name"
+done
 msg_ok "Selected container ${CTID} (${CT_NAME:-unknown})"
 
 # ---------- checks on the selected container ------------------------------------
-STATUS=$(pct status "$CTID" | awk '{print $2}')
+spin "Checking container status" pct status "$CTID" || true
+STATUS=$(awk '{print $2}' "$TMP_DIR/out")
 if [[ "$STATUS" != "running" ]]; then
-  die "Container ${CTID} is not running (status: ${STATUS}).
+  die "Container ${CTID} is not running (status: ${STATUS:-unknown}).
         Start it with:  pct start ${CTID}
         Then run this script again."
 fi
+msg_ok "Container is running (${LAST_SECS}s)"
 
-if ! pct exec "$CTID" -- test -x "${APP_DIR}/prusa_connect" 2>/dev/null; then
+if ! spin "Looking for ${APP_NAME}" pct exec "$CTID" -- test -x "${APP_DIR}/prusa_connect"; then
   die "${APP_NAME} is not installed in container ${CTID} (${APP_DIR}/prusa_connect not found).
         Did you choose the right container?"
 fi
+msg_ok "${APP_NAME} found (${LAST_SECS}s)"
 
-if ! pct exec "$CTID" -- systemctl is-active --quiet prusa-connect 2>/dev/null; then
+if ! spin "Checking service prusa-connect" pct exec "$CTID" -- systemctl is-active --quiet prusa-connect; then
   die "The service prusa-connect is not running in container ${CTID}.
         Start it with:  pct exec ${CTID} -- systemctl start prusa-connect
         Then run this script again (a start prints a new code)."
 fi
+msg_ok "Service is running (${LAST_SECS}s)"
 
 # ---------- read setup code + IP ------------------------------------------------
 # Only the log of the CURRENT service run is read – codes from earlier runs
 # are invalid. No code in this run means the setup wizard is finished.
-INV_ID=$(pct exec "$CTID" -- systemctl show -p InvocationID --value prusa-connect 2>/dev/null || true)
-CODE=""
-if [[ -n "$INV_ID" ]]; then
-  CODE=$(pct exec "$CTID" -- journalctl --no-pager -o cat "_SYSTEMD_INVOCATION_ID=${INV_ID}" 2>/dev/null \
-    | grep -o 'setup_code=[^ ]*' | tail -n1 | cut -d= -f2- | tr -d '"' || true)
-fi
-CT_IP=$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}')
+read_code_and_ip() {
+  local inv code="" ip
+  inv=$(pct exec "$CTID" -- systemctl show -p InvocationID --value prusa-connect 2>/dev/null || true)
+  if [[ -n "$inv" ]]; then
+    code=$(pct exec "$CTID" -- journalctl --no-pager -o cat "_SYSTEMD_INVOCATION_ID=${inv}" 2>/dev/null \
+      | grep -o 'setup_code=[^ ]*' | tail -n1 | cut -d= -f2- | tr -d '"' || true)
+  fi
+  ip=$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}')
+  echo "${code}|${ip}"
+}
+spin "Reading setup code from the log" read_code_and_ip || true
+IFS='|' read -r CODE CT_IP < "$TMP_DIR/out" || true
+msg_ok "Log read (${LAST_SECS}s)"
 
 # ---------- result --------------------------------------------------------------
 echo
@@ -120,7 +172,7 @@ echo -e "${GN}${BD}=============================================================
 echo -e "  Container:   ${CTID} (${CT_NAME:-unknown})"
 echo -e "  Web UI:      ${BD}http://${CT_IP:-<container-ip>}:${APP_PORT}${CL}"
 echo
-if [[ -n "$CODE" ]]; then
+if [[ -n "${CODE:-}" ]]; then
   echo -e "  Setup code:  ${GN}${BD}${CODE}${CL}"
   echo    "               Works once – a restart of the service prints a new one."
 else

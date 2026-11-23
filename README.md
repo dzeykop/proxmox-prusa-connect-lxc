@@ -106,6 +106,7 @@ What it does:
 
 | Version | Changes |
 |---------|---------|
+| 1.0.1   | Visible progress: spinner with elapsed seconds while reading containers ("Reading container 2/5 (ID 104) ... 3s") and during every check |
 | 1.0.0   | First release: container menu with recommendation, setup code in green |
 
 **Update script (prusa-connect-update.sh)**
