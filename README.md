@@ -16,13 +16,14 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/dzeykop/proxmox-prusa-co
 ## What the script does
 
 1. Checks: root, Proxmox host, amd64, internet connection
-2. Asks for container ID, hostname, CPU, RAM, storage, disk, bridge, DHCP/static IP
-3. Downloads the newest `prusa_connect_amd64` from [prusa3d/prusa-connect](https://github.com/prusa3d/prusa-connect) and verifies its SHA256 checksum
-4. Downloads the newest Debian template (if needed) and creates the container
-5. Installs the binary to `/opt/prusa-connect`, runs it as user `prusa-connect` via systemd
-6. Shows the web address (port 8080) and the one-time setup code
-7. Asks whether the container should start automatically at host boot (can be changed later under *Options → Start at boot*)
-8. Removes the unfinished container automatically if anything fails
+2. Warns if a Prusa Connect container already exists (running or stopped) – you can still install a second one, e.g. for testing; it then suggests a different name like `prusa-connect-test`
+3. Asks for container ID, hostname, CPU, RAM, storage, disk, bridge, DHCP/static IP
+4. Downloads the newest `prusa_connect_amd64` from [prusa3d/prusa-connect](https://github.com/prusa3d/prusa-connect) and verifies its SHA256 checksum
+5. Downloads the newest Debian template (if needed) and creates the container
+6. Installs the binary to `/opt/prusa-connect`, runs it as user `prusa-connect` via systemd
+7. Shows the web address (port 8080) and the one-time setup code
+8. Asks whether the container should start automatically at host boot (can be changed later under *Options → Start at boot*)
+9. Removes the unfinished container automatically if anything fails
 
 ## Default settings
 
@@ -119,6 +120,7 @@ What it does:
 
 | Version | Changes |
 |---------|---------|
+| 1.4.0   | Warns before installing a second Prusa Connect container (also finds stopped ones); suggests a different hostname for a test container |
 | 1.3.0   | Reliably shows IP address and setup code at the end (reads `setup_code=` from the log, always the newest one) |
 | 1.2.0   | Asks at the end whether the container should start at boot |
 | 1.1.0   | Visible progress: numbered steps [1/8]…[8/8], spinner with elapsed time, download progress bar, waiting timers, total install time |

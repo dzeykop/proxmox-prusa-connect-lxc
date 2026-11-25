@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  Prusa Connect Local – Proxmox LXC installer
-#  Version: 1.3.0
+#  Version: 1.4.0
 #  Author:  JFFK (github.com/dzeykop)
 #  Repo:    https://github.com/dzeykop/proxmox-prusa-connect-lxc
 #
@@ -14,7 +14,7 @@
 
 set -Eeuo pipefail
 
-SCRIPT_VERSION="1.3.0"
+SCRIPT_VERSION="1.4.0"
 APP_NAME="Prusa Connect Local"
 GH_REPO="prusa3d/prusa-connect"
 ASSET_NAME="prusa_connect_amd64"
@@ -117,6 +117,48 @@ whiptail --title "$TITLE" --yesno \
 "This will create a new unprivileged LXC container with ${APP_NAME}.\n\nProceed?" 10 64 \
   || cancelled
 
+# ---------- existing Prusa Connect containers? ----------------------------------
+# Running containers: look inside for the program.
+# Stopped containers: recognised by the description/tag this installer sets.
+msg_info "Checking for existing Prusa Connect containers..."
+EXISTING=()          # lines for the warning dialog
+EXISTING_NAMES=()    # hostnames, to avoid duplicates
+while read -r id status; do
+  cfg=$(pct config "$id" 2>/dev/null || true)
+  found=0
+  if grep -qiE 'proxmox-prusa-connect|^tags:.*prusa' <<<"$cfg"; then
+    found=1
+  elif [[ "$status" == "running" ]] && pct exec "$id" -- test -x "${APP_DIR}/prusa_connect" 2>/dev/null; then
+    found=1
+  fi
+  if (( found )); then
+    name=$(awk '/^hostname:/ {print $2}' <<<"$cfg")
+    EXISTING+=("  ${id}  ${name:-unknown}  (${status})")
+    EXISTING_NAMES+=("${name:-}")
+  fi
+done < <(pct list | awk 'NR>1 {print $1, $2}')
+
+DEFAULT_HOSTNAME="prusa-connect"
+if (( ${#EXISTING[@]} )); then
+  msg_warn "Found ${#EXISTING[@]} existing Prusa Connect container(s)"
+  whiptail --title "$TITLE" --defaultno --yesno \
+"${APP_NAME} is already installed on this host:\n
+$(printf '%s\n' "${EXISTING[@]}")\n
+Your printer is connected to only ONE server – the one whose settings file it loaded. A second container is fine for testing.\n
+Install another container anyway?" 18 72 || cancelled
+
+  # suggest a hostname that is not used yet (two servers with the same name
+  # would both announce themselves as <name>.local in the network)
+  DEFAULT_HOSTNAME="prusa-connect-test"
+  n=2
+  while printf '%s\n' "${EXISTING_NAMES[@]}" | grep -qx "$DEFAULT_HOSTNAME"; do
+    DEFAULT_HOSTNAME="prusa-connect-test${n}"; n=$((n + 1))
+  done
+  msg_info "Installing an additional container (suggested name: ${DEFAULT_HOSTNAME})"
+else
+  msg_ok "No existing Prusa Connect container found"
+fi
+
 # ---------- host resources ------------------------------------------------------
 HOST_CORES=$(nproc)
 HOST_RAM_FREE=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo)
@@ -129,8 +171,12 @@ if pct status "$CTID" >/dev/null 2>&1 || qm status "$CTID" >/dev/null 2>&1; then
   die "ID ${CTID} is already in use."
 fi
 
-CT_HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Hostname:" 9 60 "prusa-connect" 3>&1 1>&2 2>&3) || cancelled
+CT_HOSTNAME=$(whiptail --title "$TITLE" --inputbox "Hostname:" 9 60 "$DEFAULT_HOSTNAME" 3>&1 1>&2 2>&3) || cancelled
 [[ "$CT_HOSTNAME" =~ ^[a-zA-Z0-9-]+$ ]] || die "Invalid hostname."
+if (( ${#EXISTING_NAMES[@]} )) && printf '%s\n' "${EXISTING_NAMES[@]}" | grep -qx "$CT_HOSTNAME"; then
+  whiptail --title "$TITLE" --defaultno --yesno \
+"The hostname '${CT_HOSTNAME}' is already used by another Prusa Connect container.\n\nBoth servers would announce themselves as '${CT_HOSTNAME}.local' and are easy to mix up.\n\nUse this name anyway?" 13 70 || cancelled
+fi
 
 ask_number() { # $1 label $2 rec $3 min $4 max $5 unit
   local val
